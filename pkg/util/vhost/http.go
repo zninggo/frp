@@ -286,7 +286,7 @@ func (rp *HTTPReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request)
 	if req.Method == http.MethodConnect {
 		rp.connectHandler(rw, newreq)
 	} else {
-		rp.streamProxyHandler(rw, newreq)
+		rp.proxy.ServeHTTP(rw, newreq)
 	}
 }
 
