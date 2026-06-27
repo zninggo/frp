@@ -286,6 +286,53 @@ func (rp *HTTPReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request)
 	if req.Method == http.MethodConnect {
 		rp.connectHandler(rw, newreq)
 	} else {
-		rp.proxy.ServeHTTP(rw, newreq)
+		rp.streamProxyHandler(rw, newreq)
 	}
+}
+
+// streamProxyHandler proxies HTTP requests by hijacking the client connection
+// and joining it directly with the backend connection. This avoids the
+// bufio.Reader inside http.Transport, which buffers response data and
+// breaks SSE/streaming responses.
+func (rp *HTTPReverseProxy) streamProxyHandler(rw http.ResponseWriter, req *http.Request) {
+	reqRouteInfo := req.Context().Value(RouteInfoKey).(*RequestRouteInfo)
+
+	remote, err := rp.CreateConnection(reqRouteInfo, true)
+	if err != nil {
+		log.Logf(log.WarnLevel, 1, "do http proxy request [host: %s] error: %v", req.Host, err)
+		if e, ok := err.(net.Error); ok && e.Timeout() {
+			rw.WriteHeader(http.StatusGatewayTimeout)
+			return
+		}
+		rw.WriteHeader(http.StatusNotFound)
+		_, _ = rw.Write(getNotFoundPageContent())
+		return
+	}
+
+	// Apply response headers from route config
+	if rc, ok := req.Context().Value(RouteConfigKey).(*RouteConfig); ok && rc != nil {
+		for k, v := range rc.ResponseHeaders {
+			rw.Header().Set(k, v)
+		}
+	}
+
+	hj, ok := rw.(http.Hijacker)
+	if !ok {
+		remote.Close()
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	client, _, err := hj.Hijack()
+	if err != nil {
+		remote.Close()
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// Write the original request to the backend connection
+	_ = req.Write(remote)
+
+	// Bidirectional copy with no buffering
+	go libio.Join(remote, client)
 }
