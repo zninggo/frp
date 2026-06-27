@@ -57,6 +57,8 @@ func NewHTTPReverseProxy(option HTTPReverseProxyOptions, vhostRouter *Routers) *
 		vhostRouter:           vhostRouter,
 	}
 	proxy := &httputil.ReverseProxy{
+		// Flush immediately after each write to support SSE/streaming responses.
+		FlushInterval: -1,
 		// Modify incoming requests by route policies.
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.Out.Header["X-Forwarded-For"] = r.In.Header["X-Forwarded-For"]
