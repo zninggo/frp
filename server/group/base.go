@@ -3,8 +3,7 @@ package group
 import (
 	"net"
 	"sync"
-
-	gerr "github.com/fatedier/golib/errors"
+	"sync/atomic"
 )
 
 // baseGroup contains the shared plumbing for listener-based groups
@@ -14,11 +13,11 @@ type baseGroup struct {
 	group    string
 	groupKey string
 
-	acceptCh  chan net.Conn
 	realLn    net.Listener
 	lns       []*Listener
 	mu        sync.Mutex
 	cleanupFn func()
+	index     atomic.Uint64
 }
 
 // initBase resets the baseGroup for a fresh listen cycle.
@@ -27,39 +26,60 @@ func (bg *baseGroup) initBase(group, groupKey string, realLn net.Listener, clean
 	bg.group = group
 	bg.groupKey = groupKey
 	bg.realLn = realLn
-	bg.acceptCh = make(chan net.Conn)
 	bg.cleanupFn = cleanupFn
+	bg.index.Store(0)
 }
 
-// worker reads from the real listener and fans out to acceptCh.
-// The parameters are captured at creation time so that the worker is
-// bound to a specific listen cycle and cannot observe a later initBase.
-func (bg *baseGroup) worker(realLn net.Listener, acceptCh chan<- net.Conn) {
+// worker reads from the real listener and distributes connections to
+// virtual listeners using round-robin selection.
+func (bg *baseGroup) worker(realLn net.Listener) {
 	for {
 		c, err := realLn.Accept()
 		if err != nil {
 			return
 		}
-		err = gerr.PanicToError(func() {
-			acceptCh <- c
-		})
-		if err != nil {
-			c.Close()
-			return
-		}
+		bg.dispatch(c)
 	}
 }
 
-// newListener creates a new Listener wired to this baseGroup.
+// dispatch sends a connection to one of the virtual listeners using
+// round-robin. If the chosen listener's channel is full or closed, it
+// retries once; on persistent failure the connection is closed.
+func (bg *baseGroup) dispatch(c net.Conn) {
+	for range 2 {
+		bg.mu.Lock()
+		n := len(bg.lns)
+		var ln *Listener
+		if n > 0 {
+			ln = bg.lns[bg.index.Add(1)%uint64(n)]
+		}
+		bg.mu.Unlock()
+
+		if ln == nil {
+			c.Close()
+			return
+		}
+
+		select {
+		case ln.ch <- c:
+			return
+		default:
+		}
+	}
+	c.Close()
+}
+
+// newListener creates a new Listener with its own channel, wired to this baseGroup.
 // Must be called under mu.
 func (bg *baseGroup) newListener(addr net.Addr) *Listener {
-	ln := newListener(bg.acceptCh, addr, bg.closeListener)
+	ln := newListener(addr, bg.closeListener)
 	bg.lns = append(bg.lns, ln)
 	return ln
 }
 
-// closeListener removes ln from the list. When the last listener is removed,
-// it closes acceptCh, closes the real listener, and calls cleanupFn.
+// closeListener removes ln from the list and closes its channel.
+// When the last listener is removed, it closes the real listener and
+// calls cleanupFn.
 func (bg *baseGroup) closeListener(ln *Listener) {
 	bg.mu.Lock()
 	defer bg.mu.Unlock()
@@ -69,8 +89,8 @@ func (bg *baseGroup) closeListener(ln *Listener) {
 			break
 		}
 	}
+	close(ln.ch)
 	if len(bg.lns) == 0 {
-		close(bg.acceptCh)
 		bg.realLn.Close()
 		bg.cleanupFn()
 	}

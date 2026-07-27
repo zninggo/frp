@@ -9,31 +9,28 @@ import (
 )
 
 func TestListener_Accept(t *testing.T) {
-	acceptCh := make(chan net.Conn, 1)
-	ln := newListener(acceptCh, fakeAddr("127.0.0.1:1234"), func(*Listener) {})
+	ln := newListener(fakeAddr("127.0.0.1:1234"), func(*Listener) {})
 
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
 
-	acceptCh <- c1
+	ln.ch <- c1
 	got, err := ln.Accept()
 	require.NoError(t, err)
 	assert.Equal(t, c1, got)
 }
 
 func TestListener_AcceptAfterChannelClose(t *testing.T) {
-	acceptCh := make(chan net.Conn)
-	ln := newListener(acceptCh, fakeAddr("127.0.0.1:1234"), func(*Listener) {})
+	ln := newListener(fakeAddr("127.0.0.1:1234"), func(*Listener) {})
 
-	close(acceptCh)
+	close(ln.ch)
 	_, err := ln.Accept()
 	assert.ErrorIs(t, err, ErrListenerClosed)
 }
 
 func TestListener_AcceptAfterListenerClose(t *testing.T) {
-	acceptCh := make(chan net.Conn) // open, not closed
-	ln := newListener(acceptCh, fakeAddr("127.0.0.1:1234"), func(*Listener) {})
+	ln := newListener(fakeAddr("127.0.0.1:1234"), func(*Listener) {})
 
 	ln.Close()
 	_, err := ln.Accept()
@@ -43,7 +40,6 @@ func TestListener_AcceptAfterListenerClose(t *testing.T) {
 func TestListener_DoubleClose(t *testing.T) {
 	closeCalls := 0
 	ln := newListener(
-		make(chan net.Conn),
 		fakeAddr("127.0.0.1:1234"),
 		func(*Listener) { closeCalls++ },
 	)
@@ -57,7 +53,7 @@ func TestListener_DoubleClose(t *testing.T) {
 
 func TestListener_Addr(t *testing.T) {
 	addr := fakeAddr("10.0.0.1:5555")
-	ln := newListener(make(chan net.Conn), addr, func(*Listener) {})
+	ln := newListener(addr, func(*Listener) {})
 	assert.Equal(t, addr, ln.Addr())
 }
 

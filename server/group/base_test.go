@@ -52,18 +52,22 @@ func TestBaseGroup_WorkerFanOut(t *testing.T) {
 	var bg baseGroup
 	bg.initBase("g", "key", fl, func() {})
 
-	go bg.worker(fl, bg.acceptCh)
+	bg.mu.Lock()
+	ln := bg.newListener(fl.Addr())
+	bg.mu.Unlock()
+
+	go bg.worker(fl)
 
 	c1, c2 := net.Pipe()
 	defer c2.Close()
 	fl.inject(c1)
 
 	select {
-	case got := <-bg.acceptCh:
+	case got := <-ln.ch:
 		assert.Equal(t, c1, got)
 		got.Close()
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for connection on acceptCh")
+		t.Fatal("timed out waiting for connection on listener channel")
 	}
 
 	fl.Close()
@@ -76,7 +80,7 @@ func TestBaseGroup_WorkerStopsOnListenerClose(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		bg.worker(fl, bg.acceptCh)
+		bg.worker(fl)
 		close(done)
 	}()
 
@@ -88,34 +92,43 @@ func TestBaseGroup_WorkerStopsOnListenerClose(t *testing.T) {
 	}
 }
 
-func TestBaseGroup_WorkerClosesConnOnClosedChannel(t *testing.T) {
+func TestBaseGroup_WorkerDistributesRoundRobin(t *testing.T) {
 	fl := newFakeLn()
 	var bg baseGroup
 	bg.initBase("g", "key", fl, func() {})
 
-	// Close acceptCh before worker sends.
-	close(bg.acceptCh)
+	bg.mu.Lock()
+	ln1 := bg.newListener(fl.Addr())
+	ln2 := bg.newListener(fl.Addr())
+	bg.mu.Unlock()
 
-	done := make(chan struct{})
-	go func() {
-		bg.worker(fl, bg.acceptCh)
-		close(done)
-	}()
+	go bg.worker(fl)
 
-	c1, c2 := net.Pipe()
-	defer c2.Close()
-	fl.inject(c1)
+	// Send connections one at a time so the worker can dispatch each
+	// before the next arrives, ensuring deterministic round-robin.
+	// Add(1) returns: 1%2=1->ln2, 2%2=0->ln1, 3%2=1->ln2, 4%2=0->ln1
+	ln1Count := 0
+	ln2Count := 0
+	for range 4 {
+		c1, c2 := net.Pipe()
+		fl.inject(c1)
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not stop after panic recovery")
+		select {
+		case <-ln1.ch:
+			ln1Count++
+			c1.Close()
+		case <-ln2.ch:
+			ln2Count++
+			c1.Close()
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for connection")
+		}
+		c2.Close()
 	}
+	assert.Equal(t, 2, ln1Count, "ln1 should receive 2 connections")
+	assert.Equal(t, 2, ln2Count, "ln2 should receive 2 connections")
 
-	// c1 should have been closed by worker's panic recovery path.
-	buf := make([]byte, 1)
-	_, err := c1.Read(buf)
-	assert.Error(t, err, "connection should be closed by worker")
+	fl.Close()
 }
 
 func TestBaseGroup_CloseLastListenerTriggersCleanup(t *testing.T) {
@@ -129,7 +142,7 @@ func TestBaseGroup_CloseLastListenerTriggersCleanup(t *testing.T) {
 	ln2 := bg.newListener(fl.Addr())
 	bg.mu.Unlock()
 
-	go bg.worker(fl, bg.acceptCh)
+	go bg.worker(fl)
 
 	ln1.Close()
 	assert.Equal(t, 0, cleanupCalled, "cleanup should not run while listeners remain")
@@ -149,7 +162,7 @@ func TestBaseGroup_CloseOneOfTwoListeners(t *testing.T) {
 	ln2 := bg.newListener(fl.Addr())
 	bg.mu.Unlock()
 
-	go bg.worker(fl, bg.acceptCh)
+	go bg.worker(fl)
 
 	ln1.Close()
 	assert.Equal(t, 0, cleanupCalled)

@@ -111,7 +111,7 @@ func (tmg *TCPMuxGroup) HTTPConnectListen(
 			})
 		})
 		ln = tmg.newListener(tcpMuxLn.Addr())
-		go tmg.worker(tcpMuxLn, tmg.acceptCh)
+		go tmg.worker(tcpMuxLn)
 	} else {
 		// route config in the same group must be equal
 		if tmg.group != group || tmg.domain != routeConfig.Domain ||

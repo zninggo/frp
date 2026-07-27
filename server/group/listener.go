@@ -6,21 +6,21 @@ import (
 )
 
 // Listener is a per-proxy virtual listener that receives connections
-// from a shared group. It implements net.Listener.
+// distributed by the group worker via round-robin. It implements net.Listener.
 type Listener struct {
-	acceptCh <-chan net.Conn
-	addr     net.Addr
-	closeCh  chan struct{}
-	onClose  func(*Listener)
-	once     sync.Once
+	ch      chan net.Conn
+	addr    net.Addr
+	closeCh chan struct{}
+	onClose func(*Listener)
+	once    sync.Once
 }
 
-func newListener(acceptCh <-chan net.Conn, addr net.Addr, onClose func(*Listener)) *Listener {
+func newListener(addr net.Addr, onClose func(*Listener)) *Listener {
 	return &Listener{
-		acceptCh: acceptCh,
-		addr:     addr,
-		closeCh:  make(chan struct{}),
-		onClose:  onClose,
+		ch:      make(chan net.Conn, 1),
+		addr:    addr,
+		closeCh: make(chan struct{}),
+		onClose: onClose,
 	}
 }
 
@@ -28,7 +28,7 @@ func (ln *Listener) Accept() (net.Conn, error) {
 	select {
 	case <-ln.closeCh:
 		return nil, ErrListenerClosed
-	case c, ok := <-ln.acceptCh:
+	case c, ok := <-ln.ch:
 		if !ok {
 			return nil, ErrListenerClosed
 		}

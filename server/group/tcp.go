@@ -101,7 +101,7 @@ func (tg *TCPGroup) Listen(proxyName string, group string, groupKey string, addr
 			})
 		})
 		ln = tg.newListener(tcpLn.Addr())
-		go tg.worker(tcpLn, tg.acceptCh)
+		go tg.worker(tcpLn)
 	} else {
 		// address and port in the same group must be equal
 		if tg.group != group || tg.addr != addr {

@@ -87,7 +87,7 @@ func (g *HTTPSGroup) Listen(
 			})
 		})
 		ln = g.newListener(httpsLn.Addr())
-		go g.worker(httpsLn, g.acceptCh)
+		go g.worker(httpsLn)
 	} else {
 		// route config in the same group must be equal
 		if g.group != group || g.domain != routeConfig.Domain {
